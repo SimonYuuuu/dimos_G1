@@ -1,0 +1,20 @@
+# Handle line endings automatically for files Git considers text,
+# converting them to LF on checkout.
+* text=auto eol=lf
+# Ensure Python files always use LF for line endings.
+*.py text eol=lf
+# Keep dependency lockfiles tracked without including their generated contents in diffs.
+Cargo.lock -diff linguist-generated
+uv.lock -diff linguist-generated
+deno.lock -diff linguist-generated
+flake.lock -diff linguist-generated
+package-lock.json -diff linguist-generated
+# Treat designated file types as binary and do not alter their contents or line endings.
+*.ico binary
+*.pdf binary
+# Explicit LFS tracking for test files
+docs/capabilities/memory/assets/.gitattributes -filter -diff -merge text
+# The docs deploy does not fetch all of Git LFS; keep site branding as normal blobs.
+docs/assets/dimensional-logo-master-transparent.png -filter -diff -merge
+docs/assets/favicon.png -filter -diff -merge
+# DimSim scene data and agent model
