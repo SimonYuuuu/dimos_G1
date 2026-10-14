@@ -18,6 +18,8 @@ from dimos.robot.unitree.g1.effectors.inspire_hand.modbus import (
     DEFAULT_IP,
     DEFAULT_PORT,
     InspireModbusClient,
+    env_ip,
+    env_port,
 )
 from dimos.robot.unitree.g1.effectors.inspire_hand.module import (
     JOINT_NAMES,
@@ -33,5 +35,7 @@ __all__ = [
     "InspireHandModule",
     "InspireHandModuleConfig",
     "InspireModbusClient",
+    "env_ip",
+    "env_port",
     "joint_names",
 ]

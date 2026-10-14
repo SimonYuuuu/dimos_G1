@@ -10,7 +10,8 @@
 #   INSPIRE_HAND_ID   默认 1
 #   G1_SSH_HOST       默认 unitree@192.168.123.164（--remote 时使用）
 #   REPEAT 重复次数；HAND_CLOSE 弯曲幅度；HAND_FIST 收拢位置；HAND_SPEED/HAND_FORCE 速度/力度（改脚本顶部默认值即可）
-#   HAND_SPEED        速度 0-1000，默认 300；HAND_FORCE 力阈值 0-1000，默认 300
+#   HAND_SPEED        速度 0-1000，默认 200；HAND_FORCE 力阈值 0-1000，默认 200
+#   HAND_CLOSE        单指弯曲位置 0-1000，默认 850
 set -euo pipefail
 
 # ===== 在这里改参数 =====
@@ -40,9 +41,9 @@ PORT  = int(os.environ.get("INSPIRE_HAND_PORT", "6000"))
 UID   = int(os.environ.get("INSPIRE_HAND_ID", "1"))
 FIST  = max(0, min(1000, int(os.environ.get("HAND_FIST", "300"))))
 REPEAT = max(1, int(os.environ.get("HAND_REPEAT", "2")))
-CLOSE = max(0, min(1000, int(os.environ.get("HAND_CLOSE", "600"))))
-SPEED = max(0, min(1000, int(os.environ.get("HAND_SPEED", "300"))))
-FORCE = max(0, min(1000, int(os.environ.get("HAND_FORCE", "300"))))
+CLOSE = max(0, min(1000, int(os.environ.get("HAND_CLOSE", "850"))))
+SPEED = max(0, min(1000, int(os.environ.get("HAND_SPEED", "200"))))
+FORCE = max(0, min(1000, int(os.environ.get("HAND_FORCE", "200"))))
 MODE  = os.environ.get("HAND_MODE", "wiggle")
 
 REG_ANGLE_SET = 1486   # 6 个寄存器: 小指, 无名指, 中指, 食指, 拇指弯曲, 拇指旋转
@@ -60,9 +61,20 @@ def write_regs(addr, vals):
     body = struct.pack(">BBHHB", UID, 0x10, addr, len(vals), len(vals) * 2)
     body += b"".join(struct.pack(">H", v) for v in vals)
     s.sendall(struct.pack(">HHH", tid, 0, len(body)) + body)
-    r = s.recv(256)
-    if len(r) < 8 or r[7] & 0x80:
+    hdr = recv_exact(6)  # MBAP: tid, proto, length
+    rtid, _, length = struct.unpack(">HHH", hdr)
+    r = hdr + recv_exact(length)
+    if rtid != tid or len(r) < 8 or r[7] & 0x80:
         raise RuntimeError(f"Modbus 写入失败 addr={addr}: {r.hex()}")
+
+def recv_exact(n):
+    buf = b""
+    while len(buf) < n:
+        chunk = s.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError("灵巧手断开了连接")
+        buf += chunk
+    return buf
 
 def pose(v, wait=0.8):
     write_regs(REG_ANGLE_SET, v)
@@ -105,11 +117,11 @@ PYEOF
 export HAND_MODE="$MODE" HAND_REPEAT="$REPEAT"
 if [[ "$REMOTE" == 1 ]]; then
   REMOTE_HOST="${G1_SSH_HOST:-unitree@192.168.123.164}"
-  ENVS="HAND_MODE=$MODE HAND_REPEAT=$REPEAT HAND_CLOSE=$HAND_CLOSE HAND_SPEED=$HAND_SPEED HAND_FORCE=$HAND_FORCE HAND_FIST=$HAND_FIST"
+  ENVS=("HAND_MODE=$MODE" "HAND_REPEAT=$REPEAT" "HAND_CLOSE=$HAND_CLOSE" "HAND_SPEED=$HAND_SPEED" "HAND_FORCE=$HAND_FORCE" "HAND_FIST=$HAND_FIST")
   for v in INSPIRE_HAND_IP INSPIRE_HAND_PORT INSPIRE_HAND_ID; do
-    [[ -n "${!v:-}" ]] && ENVS="$ENVS $v=${!v}"
+    if [[ -n "${!v:-}" ]]; then ENVS+=("$v=${!v}"); fi
   done
-  printf '%s\n' "$PY" | ssh "$REMOTE_HOST" "env $ENVS python3 -"
+  printf '%s\n' "$PY" | ssh "$REMOTE_HOST" "env $(printf '%q ' "${ENVS[@]}")python3 -"
 else
   printf '%s\n' "$PY" | python3 -
 fi
