@@ -377,3 +377,14 @@ site/
 /misc/DimSim/scenes/apartment/objects/woven-wicker-laundry-hamper-with-a-fabric-liner/state-default.glb
 /misc/DimSim/scenes/apartment/structure.glb
 /.lfsconfig
+
+# G1 / Orin runtime artifacts (never commit)
+*.pc2.lcm
+*.log
+*.pid
+/voice-*.log
+/voice-*.pid
+*.local
+.env.*
+!.env.example
+/.codex-backups/
