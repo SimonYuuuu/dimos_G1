@@ -20,9 +20,11 @@
 归一化数值 0..1，1=张开；关节顺序：小指、无名指、中指、食指、拇指弯曲、拇指旋转。
 """
 
+from collections.abc import Sequence
 import os
 import sys
 import time
+from typing import Any, Protocol, cast
 
 from dimos.porcelain.dimos import Dimos
 
@@ -37,15 +39,25 @@ THUMB_IN = (
 OPEN = [1.0] * 6
 
 
+class _HandRPC(Protocol):
+    """本脚本用到的 InspireHandModule RPC 接口。"""
+
+    def get_state(self) -> Any: ...
+
+    def set_normalized(self, values: list[float]) -> Any: ...
+
+    def open_hand(self) -> Any: ...
+
+
 def main() -> int:
     # Dimos.connect() 只连接已运行的实例；app.stop() 只关闭本脚本的 RPC 连接，不会停掉 DimOS 进程。
     # 实例的启动/停止由 run_g1_inspire_hand_gestures.sh 负责（只停它自己启动的）。
     app = Dimos.connect(timeout=10.0)
     try:
-        hand = app.get_module("InspireHandModule")
+        hand = cast("_HandRPC", app.get_module("InspireHandModule"))
         print("当前状态:", hand.get_state())
 
-        def pose(p, wait=0.8):
+        def pose(p: Sequence[float], wait: float = 0.8) -> None:
             hand.set_normalized(list(p))  # RPC，全量程（不受 agent skill 安全下限限制）
             time.sleep(wait)
 
