@@ -41,6 +41,7 @@ from reactivex.disposable import Disposable
 from dimos.core.core import rpc
 from dimos.core.module import Module, ModuleConfig
 from dimos.core.stream import In, Out
+from dimos.robot.unitree.g1.wake_word import WakeMatch, WakeMatcherSettings, match_wake
 from dimos.utils.logging_config import setup_logger
 
 if TYPE_CHECKING:
@@ -99,6 +100,17 @@ class G1AudioBridgeConfig(ModuleConfig):
         "开始对话",
     )
     english_wake_aliases: tuple[str, ...] = ("nova", "nover")
+    # Wake matching (see wake_word.py).  The doubled phrase "小诺小诺" /
+    # "nova nova" is the recommended wake and is accepted anywhere in a
+    # sentence.  Single "小诺"/"Nova" still works at sentence start.
+    wake_fuzzy_enabled: bool = Field(default=True)
+    wake_fuzzy_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
+    wake_strong_threshold: float = Field(default=0.95, ge=0.0, le=1.0)
+    wake_require_double: bool = Field(default=False)
+    wake_double_anywhere: bool = Field(default=True)
+    # Off by default: a single "小诺" mid-sentence is common when people talk
+    # about the robot; use the doubled phrase for mid-sentence wake instead.
+    wake_strong_anywhere: bool = Field(default=False)
 
 
 class G1AudioBridge(Module):
@@ -224,10 +236,7 @@ class G1AudioBridge(Module):
         with self._lock:
             if time.monotonic() < self._speaking_until and not (
                 requested_language is not None
-                or (
-                    self.config.allow_stop_while_speaking
-                    and self._looks_like_emergency_stop(text)
-                )
+                or (self.config.allow_stop_while_speaking and self._looks_like_emergency_stop(text))
             ):
                 logger.debug("Ignoring ASR while onboard TTS is speaking")
                 return
@@ -246,9 +255,7 @@ class G1AudioBridge(Module):
                     language=acknowledgement_language,
                     remainder=remainder,
                 )
-                self._speak(
-                    "我在，请说。" if acknowledgement_language == "zh" else "I am here."
-                )
+                self._speak("我在，请说。" if acknowledgement_language == "zh" else "I am here.")
                 if not remainder:
                     return
                 text = remainder
@@ -263,9 +270,7 @@ class G1AudioBridge(Module):
                         language=self._conversation_language,
                     )
                     self._speak(
-                        "我在，请说。"
-                        if self._conversation_language == "zh"
-                        else "I am here."
+                        "我在，请说。" if self._conversation_language == "zh" else "I am here."
                     )
                     return
                 logger.info("Ignoring ASR while voice assistant is asleep", text=text)
@@ -327,22 +332,36 @@ class G1AudioBridge(Module):
         self._set_led(255, 180, 0)
         self.human_input.publish(agent_text)
 
+    def _wake_settings(self) -> WakeMatcherSettings:
+        config = self.config
+        return WakeMatcherSettings(
+            chinese_aliases=tuple(config.chinese_wake_aliases),
+            english_aliases=tuple(config.english_wake_aliases),
+            fuzzy_enabled=getattr(config, "wake_fuzzy_enabled", True),
+            fuzzy_threshold=getattr(config, "wake_fuzzy_threshold", 0.8),
+            strong_threshold=getattr(config, "wake_strong_threshold", 0.95),
+            require_double=getattr(config, "wake_require_double", False),
+            double_anywhere=getattr(config, "wake_double_anywhere", True),
+            strong_anywhere=getattr(config, "wake_strong_anywhere", False),
+        )
+
+    def _match_wake(self, text: str) -> WakeMatch | None:
+        return match_wake(text, self._wake_settings())
+
     def _extract_wake_word(self, text: str) -> tuple[str | None, str]:
-        """Match a conservative prefix alias and return its remaining command."""
-        normalized = re.sub(r"^[\s，。！？,.!?]+", "", text).strip()
-        normalized = re.sub(r"^(?:你好|嗨|嘿)[\s，。！？,.!?]*", "", normalized)
-        lowered = normalized.lower()
-        for alias in sorted(self.config.chinese_wake_aliases, key=len, reverse=True):
-            if normalized.startswith(alias):
-                return "zh", normalized[len(alias) :].lstrip(" ，。！？,.!?")
-        for alias in sorted(self.config.english_wake_aliases, key=len, reverse=True):
-            english_candidate = re.sub(r"^(?:hey|hello)\s+", "", lowered)
-            if english_candidate.startswith(alias):
-                prefix_length = len(normalized) - len(english_candidate)
-                boundary = prefix_length + len(alias)
-                if len(lowered) == boundary or not lowered[boundary].isalpha():
-                    return "en", normalized[boundary:].lstrip(" ,.!?")
-        return None, text
+        """Return the wake language and the remaining command text."""
+        match = self._match_wake(text)
+        if match is None:
+            return None, text
+        logger.info(
+            "Voice wake word matched",
+            reason=match.reason,
+            phrase=match.phrase,
+            score=match.score,
+            language=match.language,
+            text=text,
+        )
+        return match.language, match.remainder
 
     def _record_short_wake_attempt(self, text: str, now: float) -> bool:
         """Wake only after repeated short non-Latin results; never execute them."""
@@ -408,24 +427,30 @@ class G1AudioBridge(Module):
         """Return an explicit user-requested language, never an inference."""
         lowered = re.sub(r"[,.!?，。！？]+", " ", text.lower()).strip()
         compact = re.sub(r"[\s,.!?，。！？]+", "", text.lower())
-        if compact in {"中文", "汉语", "普通话", "中文模式"} or re.search(
-            r"(?:切换|换成|改成|改用|使用|用|说|讲|回答).{0,6}(?:中文|汉语|普通话)", text
-        ) or re.search(
-            r"(?:switch|change|speak|use|go)?\s*(?:back\s+)?to\s+(?:chinese|mandarin)\b|"
-            r"\b(?:speak|use)\s+(?:chinese|mandarin)\b|"
-            r"\b(?:answer|reply)\s+in\s+(?:chinese|mandarin)\b|"
-            r"\b(?:chinese|mandarin)(?:\s+(?:mode|please))?\b",
-            lowered,
+        if (
+            compact in {"中文", "汉语", "普通话", "中文模式"}
+            or re.search(
+                r"(?:切换|换成|改成|改用|使用|用|说|讲|回答).{0,6}(?:中文|汉语|普通话)", text
+            )
+            or re.search(
+                r"(?:switch|change|speak|use|go)?\s*(?:back\s+)?to\s+(?:chinese|mandarin)\b|"
+                r"\b(?:speak|use)\s+(?:chinese|mandarin)\b|"
+                r"\b(?:answer|reply)\s+in\s+(?:chinese|mandarin)\b|"
+                r"\b(?:chinese|mandarin)(?:\s+(?:mode|please))?\b",
+                lowered,
+            )
         ):
             return "zh"
-        if compact in {"英文", "英语", "英文模式", "英语模式"} or re.search(
-            r"(?:切换|换成|改成|改用|使用|用|说|讲|回答).{0,6}(?:英文|英语)", text
-        ) or re.search(
-            r"(?:switch|change|wish|speak|use|go)?\s*(?:back\s+)?to\s+english\b|"
-            r"\b(?:switch|change|speak|use)\b.{0,20}\benglish\b|"
-            r"\b(?:answer|reply)\s+in\s+english\b|"
-            r"\benglish(?:\s+(?:mode|please))?\b",
-            lowered,
+        if (
+            compact in {"英文", "英语", "英文模式", "英语模式"}
+            or re.search(r"(?:切换|换成|改成|改用|使用|用|说|讲|回答).{0,6}(?:英文|英语)", text)
+            or re.search(
+                r"(?:switch|change|wish|speak|use|go)?\s*(?:back\s+)?to\s+english\b|"
+                r"\b(?:switch|change|speak|use)\b.{0,20}\benglish\b|"
+                r"\b(?:answer|reply)\s+in\s+english\b|"
+                r"\benglish(?:\s+(?:mode|please))?\b",
+                lowered,
+            )
         ):
             return "en"
         return None
